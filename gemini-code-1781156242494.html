@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CMP 全栈运动学仿真系统 (含 EPD Laser 终点追踪)</title>
+    <style>
+        :root {
+            --primary: #0ea5e9; --primary-hover: #0284c7;
+            --bg-color: #f8fafc; --panel-bg: #ffffff;
+            --border: #e2e8f0; --text-main: #0f172a; --text-muted: #64748b;
+            --section-bg: #f1f5f9;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { margin: 0 0 8px 0; font-size: 26px; }
+        .header p { margin: 0; color: var(--text-muted); }
+        
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; width: 100%; max-width: 1400px; justify-content: center; flex-wrap: wrap;}
+        .tab-btn { padding: 10px 18px; font-size: 14px; font-weight: bold; cursor: pointer; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); transition: all 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .tab-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        .container { display: flex; gap: 20px; max-width: 1400px; width: 100%; justify-content: center; align-items: flex-start; }
+        .panel { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .controls { flex: 1; min-width: 320px; max-width: 400px; }
+        .visualization { flex: 2; display: flex; flex-direction: column; align-items: center; position: relative; width: 100%; max-width: 850px;}
+        
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 6px; font-size: 13px; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        select { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 14px; margin-bottom: 10px;}
+        
+        .box { background: var(--section-bg); padding: 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 12px; }
+        .box-title { font-size: 14px; font-weight: bold; margin-bottom: 10px; color: var(--primary); border-bottom: 1px solid #cbd5e1; padding-bottom: 5px;}
+        
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;}
+        button { flex: 1; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; color: white; min-width: 140px;}
+        .btn-reset { background: #ef4444; } .btn-reset:hover { background: #dc2626; }
+        .btn-toggle { background: var(--primary); } .btn-toggle:hover { background: var(--primary-hover); }
+        .btn-fast { background: #8b5cf6; width: 100%; margin-top: 10px;} .btn-fast:hover { background: #7c3aed; }
+        
+        canvas { border: 1px solid var(--border); border-radius: 8px; background-color: #fff; box-shadow: inset 0 0 10px rgba(0,0,0,0.05); max-width: 100%; }
+        .view-content { display: none; width: 100%; flex-direction: column; align-items: center;}
+        .view-content.active { display: flex; }
+        
+        .legend { display: flex; align-items: center; width: 100%; margin-top: 15px; font-size: 13px; padding: 0 20px; }
+        .color-bar { flex: 1; height: 12px; margin: 0 15px; border-radius: 6px; background: linear-gradient(to right, blue, cyan, lime, yellow, red); }
+        .metrics { margin-top: 10px; width: 100%;}
+        .metric-card { background: var(--bg-color); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 13px;}
+        .metric-value { font-size: 16px; font-weight: bold; color: var(--primary); }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>CMP 全栈量产运动学分析系统</h1>
+        <p>包含 NUV 分析 | Defect 溯源 | Pad 磨损 | EPD 激光轨迹</p>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('tab-nuv')">1. Wafer NUV & 剖面预测</button>
+        <button class="tab-btn" onclick="switchTab('tab-defect')">2. Defect 划痕图谱溯源</button>
+        <button class="tab-btn" onclick="switchTab('tab-pad')">3. Pad 长周期修整 (Disk)</button>
+        <button class="tab-btn" onclick="switchTab('tab-epd')" style="background-color: #fce7f3; color: #be185d; border-color: #fbcfe8;">4. EPD 终点激光采样分析</button>
+    </div>
+
+    <div class="container">
+        <div class="panel controls">
+            <div class="box">
+                <div class="box-title">全局基础转速</div>
+                <div class="control-group">
+                    <label><span>抛光盘转速 (Platen, ω_p)</span><span id="val-wp">60 rpm</span></label>
+                    <input type="range" id="slider-wp" min="10" max="120" value="60" step="1">
+                </div>
+            </div>
+
+            <div id="panel-wafer-controls">
+                <div class="box">
+                    <div class="box-title" style="color: #4f46e5; border-color: #c7d2fe;">Wafer 载体设定 (通用)</div>
+                    <div class="control-group">
+                        <label><span>载体转速 (Carrier, ω_c)</span><span id="val-wc">40 rpm</span></label>
+                        <input type="range" id="slider-wc" min="10" max="120" value="40" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label><span>Wafer 内边界 (Inner)</span><span id="val-in">160 mm</span></label>
+                        <input type="range" id="slider-in" min="100" max="250" value="160" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label><span>Wafer 外边界 (Outer)</span><span id="val-out">220 mm</span></label>
+                        <input type="range" id="slider-out" min="100" max="250" value="220" step="1">
+                    </div>
+                    <select id="select-profile">
+                        <option value="linear">Wafer 等速扫掠 (Linear)</option>
+                        <option value="sine">Wafer 正弦扫掠 (Sine)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="panel-wafer-predict" style="display: block;">
+                <div class="box" style="border-color: #8b5cf6; background-color: #f5f3ff;">
+                    <div class="box-title" style="color: #6d28d9; border-color: #ddd6fe;">Wafer 积分预测设定</div>
+                    <div class="control-group">
+                        <label><span>预测抛光时长 (Seconds)</span><span id="val-w-time">60 s</span></label>
+                        <input type="range" id="slider-w-time" min="10" max="300" value="60" step="5">
+                    </div>
+                    <button id="btn-wafer-predict" class="btn-fast">🚀 生成 Wafer 径向切削剖面</button>
+                </div>
+            </div>
+
+            <div id="panel-defect-controls" class="box" style="display: none; border-color: #f59e0b; background-color: #fffbeb;">
+                <div class="box-title" style="color: #d97706; border-color: #fcd34d;">Pad 异物坐标</div>
+                <div class="control-group">
+                    <label><span>Pad 异物所在半径</span><span id="val-defect-r">200 mm</span></label>
+                    <input type="range" id="slider-defect-r" min="0" max="380" value="200" step="1">
+                </div>
+            </div>
+
+            <div id="panel-disk-controls" style="display: none;">
+                <div class="box" style="border-color: #10b981; background-color: #f0fdf4;">
+                    <div class="box-title" style="color: #047857; border-color: #a7f3d0;">修整盘 (Disk) 设定</div>
+                    <div class="control-group">
+                        <label><span>修整盘转速 (Disk, ω_d)</span><span id="val-wd">50 rpm</span></label>
+                        <input type="range" id="slider-wd" min="10" max="150" value="50" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label><span>Sweep 内边界</span><span id="val-disk-in">120 mm</span></label>
+                        <input type="range" id="slider-disk-in" min="0" max="300" value="120" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label><span>Sweep 外边界</span><span id="val-disk-out">350 mm</span></label>
+                        <input type="range" id="slider-disk-out" min="200" max="400" value="350" step="1">
+                    </div>
+                    <select id="select-disk-profile">
+                        <option value="linear">Disk 等速扫掠 (避免深坑)</option>
+                        <option value="sine">Disk 正弦扫掠 (产生环沟)</option>
+                    </select>
+                </div>
+                <button id="btn-disk-predict" class="btn-fast" style="background: #10b981;">🚀 生成 60 分钟 Pad 剖面</button>
+            </div>
+
+            <div id="panel-epd-controls" style="display: none;">
+                <div class="box" style="border-color: #e11d48; background-color: #fff1f2;">
+                    <div class="box-title" style="color: #be185d; border-color: #fecdd3;">🔴 EPD 激光传感器设定</div>
+                    <div class="control-group">
+                        <label><span>Laser 窗口在 Pad 半径</span><span id="val-epd-r">190 mm</span></label>
+                        <input type="range" id="slider-epd-r" min="50" max="350" value="190" step="1">
+                    </div>
+                    <div class="control-group">
+                        <label><span>仿真提取时长 (Seconds)</span><span id="val-epd-time">5 s</span></label>
+                        <input type="range" id="slider-epd-time" min="1" max="20" value="5" step="0.5">
+                    </div>
+                    <p style="font-size: 12px; color: #9f1239; margin-top:5px; line-height: 1.4;">
+                        * 采样率设定为 100 Hz。生成 Laser 在特定时间窗口内打在 Wafer 上的真实物理落点轨迹。
+                    </p>
+                </div>
+                <button id="btn-epd-predict" class="btn-fast" style="background: #e11d48;">🔴 生成 Laser 采样轨迹</button>
+            </div>
+
+            <div class="btn-group">
+                <button id="btn-toggle" class="btn-toggle">暂停动画</button>
+                <button id="btn-reset" class="btn-reset">重置积分地图</button>
+            </div>
+
+            <div class="metrics">
+                <div class="metric-card" id="metric-pos">
+                    <span id="lbl-pos">中心位置 e(t)</span>
+                    <span class="metric-value" id="res-e">190.0 mm</span>
+                </div>
+                <div class="metric-card">
+                    <span>当前运行/积分时间</span>
+                    <span class="metric-value" id="res-time">0.0 s</span>
+                </div>
+                <div class="metric-card" id="card-result" style="background-color: #eff6ff; border: 1px solid #bfdbfe;">
+                    <span id="lbl-result">非均匀度 (NU)</span>
+                    <span class="metric-value" id="res-result" style="color: #1d4ed8;">0.00 %</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel visualization">
+            <div id="view-nuv" class="view-content active">
+                <canvas id="canvasNuv" width="820" height="820"></canvas>
+                <div class="legend">
+                    <span id="leg-min-nuv">去除慢 (0 m/s)</span><div class="color-bar"></div><span id="leg-max-nuv">去除快</span>
+                </div>
+                <canvas id="canvasWaferProfile" width="820" height="200" style="margin-top: 15px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; display: none;"></canvas>
+                <p id="lbl-wafer-profile" style="font-size: 13px; color: #64748b; margin-top: 5px; display: none;">▲ Wafer 径向相对去除量剖面 (X轴: Wafer 距圆心半径 mm)</p>
+            </div>
+
+            <div id="view-defect" class="view-content">
+                <canvas id="canvasDefect" width="820" height="820"></canvas>
+            </div>
+
+            <div id="view-pad" class="view-content">
+                <canvas id="canvasPad" width="820" height="820"></canvas>
+                <div class="legend">
+                    <span id="leg-min-pad">损耗浅</span><div class="color-bar" style="background: linear-gradient(to right, #1e3a8a, #3b82f6, #10b981, #eab308, #ef4444);"></div><span id="leg-max-pad">损耗深</span>
+                </div>
+                <canvas id="canvasPadProfile" width="820" height="200" style="margin-top: 15px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc;"></canvas>
+                <p style="font-size: 13px; color: #64748b; margin-top: 5px;">▲ Pad 径向损耗剖面图 (X轴: Pad 距圆心半径 mm)</p>
+            </div>
+
+            <div id="view-epd" class="view-content">
+                <canvas id="canvasEpd2D" width="820" height="580" style="background: #f1f5f9;"></canvas>
+                <p style="font-size: 13px; color: #e11d48; margin-top: 5px; font-weight: bold;">▲ EPD 激光在 Wafer 表面的扫描落点 (第一视角，缺口朝上)</p>
+                <canvas id="canvasEpdProfile" width="820" height="220" style="margin-top: 15px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;"></canvas>
+                <p style="font-size: 13px; color: #64748b; margin-top: 5px;">▲ 激光打在 Wafer 上的实时半径变化 (X轴: 时间 s, Y轴: Wafer 半径 r)</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === 基础物理常量 ===
+        const R_pad = 387.5; const R_wafer = 150; const R_disk = 54;
+        const cx = 410, cy = 410;
+        function mapX(x) { return cx + x; } function mapY(y) { return cy - y; }
+
+        // === 全局状态与参数 ===
+        let wp_rpm = 60, wc_rpm = 40, wd_rpm = 50;
+        let activeTab = 'tab-nuv'; 
+        let isRunning = true, lastTime = performance.now();
+
+        // 运动学扫掠参数
+        let w_in = 160, w_out = 220, w_profile = 'linear', w_e0 = 190, w_amp = 30;
+        let d_in = 120, d_out = 350, d_profile = 'linear', d_e0 = 235, d_amp = 115;
+        
+        // 特殊功能参数
+        let defect_r = 200;
+        let predict_w_time = 60; // Tab 1 Wafer预测时间
+        let epd_r = 190, epd_time = 5; // Tab 4 EPD 参数
+        
+        // 积分地图与时间
+        let simTime = 0, simTimeDefect = 0, simTimePad = 0;
+        let gridWafer = [], scratchPath = [], gridPad = [];
+        const stepWafer = 4, stepPad = 8;
+        
+        // EPD 数据存储
+        let epdPoints2D = []; // {x, y}
+        let epdData1D = [];   // {t, r}
+
+        // === Canvas 上下文 ===
+        const ctxNuv = document.getElementById('canvasNuv').getContext('2d');
+        const ctxWaferProf = document.getElementById('canvasWaferProfile').getContext('2d');
+        const ctxDefect = document.getElementById('canvasDefect').getContext('2d');
+        const ctxPad = document.getElementById('canvasPad').getContext('2d');
+        const ctxPadProf = document.getElementById('canvasPadProfile').getContext('2d');
+        const ctxEpd2D = document.getElementById('canvasEpd2D').getContext('2d');
+        const ctxEpdProf = document.getElementById('canvasEpdProfile').getContext('2d');
+
+        // === UI 绑定函数 ===
+        function syncWaferSweep() {
+            w_in = parseFloat(document.getElementById('slider-in').value); w_out = parseFloat(document.getElementById('slider-out').value);
+            if(w_in > w_out){ w_out = w_in; document.getElementById('slider-out').value = w_out; }
+            w_e0 = (w_in + w_out) / 2; w_amp = (w_out - w_in) / 2;
+            document.getElementById('val-in').innerText = w_in + ' mm'; document.getElementById('val-out').innerText = w_out + ' mm';
+            resetAll();
+        }
+        function syncDiskSweep() {
+            d_in = parseFloat(document.getElementById('slider-disk-in').value); d_out = parseFloat(document.getElementById('slider-disk-out').value);
+            if(d_in > d_out){ d_out = d_in; document.getElementById('slider-disk-out').value = d_out; }
+            d_e0 = (d_in + d_out) / 2; d_amp = (d_out - d_in) / 2;
+            document.getElementById('val-disk-in').innerText = d_in + ' mm'; document.getElementById('val-disk-out').innerText = d_out + ' mm';
+            resetAll();
+        }
+
+        ['slider-in', 'slider-out'].forEach(id => document.getElementById(id).addEventListener('input', syncWaferSweep));
+        ['slider-disk-in', 'slider-disk-out'].forEach(id => document.getElementById(id).addEventListener('input', syncDiskSweep));
+        document.getElementById('slider-wp').addEventListener('input', e => { wp_rpm = parseFloat(e.target.value); document.getElementById('val-wp').innerText = wp_rpm + ' rpm'; resetAll(); });
+        document.getElementById('slider-wc').addEventListener('input', e => { wc_rpm = parseFloat(e.target.value); document.getElementById('val-wc').innerText = wc_rpm + ' rpm'; resetAll(); });
+        document.getElementById('slider-wd').addEventListener('input', e => { wd_rpm = parseFloat(e.target.value); document.getElementById('val-wd').innerText = wd_rpm + ' rpm'; resetAll(); });
+        document.getElementById('slider-defect-r').addEventListener('input', e => { defect_r = parseFloat(e.target.value); document.getElementById('val-defect-r').innerText = defect_r + ' mm'; resetAll(); });
+        
+        // 特殊功能参数绑定
+        document.getElementById('slider-w-time').addEventListener('input', e => { predict_w_time = parseFloat(e.target.value); document.getElementById('val-w-time').innerText = predict_w_time + ' s'; });
+        document.getElementById('slider-epd-r').addEventListener('input', e => { epd_r = parseFloat(e.target.value); document.getElementById('val-epd-r').innerText = epd_r + ' mm'; });
+        document.getElementById('slider-epd-time').addEventListener('input', e => { epd_time = parseFloat(e.target.value); document.getElementById('val-epd-time').innerText = epd_time + ' s'; });
+
+        document.getElementById('select-profile').addEventListener('change', e => { w_profile = e.target.value; resetAll(); });
+        document.getElementById('select-disk-profile').addEventListener('change', e => { d_profile = e.target.value; resetAll(); });
+
+        document.getElementById('btn-toggle').addEventListener('click', e => {
+            isRunning = !isRunning; e.target.innerText = isRunning ? "暂停动画" : "继续动画";
+            e.target.style.background = isRunning ? "var(--primary)" : "#f59e0b";
+            if(isRunning) { lastTime = performance.now(); requestAnimationFrame(loop); }
+        });
+        document.getElementById('btn-reset').addEventListener('click', resetAll);
+
+        // === 选项卡切换控制 ===
+        function switchTab(tabId) {
+            activeTab = tabId;
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`button[onclick="switchTab('${tabId}')"]`).classList.add('active');
+            document.querySelectorAll('.view-content').forEach(v => v.classList.remove('active'));
+            
+            const targetViewId = tabId.replace('tab', 'view');
+            document.getElementById(targetViewId).classList.add('active');
+            
+            // 面板开关逻辑
+            document.getElementById('panel-wafer-controls').style.display = (tabId === 'tab-pad') ? 'none' : 'block';
+            document.getElementById('panel-wafer-predict').style.display = (tabId === 'tab-nuv') ? 'block' : 'none';
+            document.getElementById('panel-defect-controls').style.display = (tabId === 'tab-defect') ? 'block' : 'none';
+            document.getElementById('panel-disk-controls').style.display = (tabId === 'tab-pad') ? 'block' : 'none';
+            document.getElementById('panel-epd-controls').style.display = (tabId === 'tab-epd') ? 'block' : 'none';
+
+            // 看板信息更新
+            if (tabId === 'tab-pad') {
+                document.getElementById('lbl-pos').innerText = "Disk 中心位置 e_d(t)";
+                document.getElementById('lbl-result').innerText = "Pad 切削变异系数 (WNU)";
+                document.getElementById('card-result').style.display = 'flex';
+                document.getElementById('res-time').innerText = (simTimePad / 60).toFixed(1) + ' min';
+            } else if (tabId === 'tab-defect' || tabId === 'tab-epd') {
+                document.getElementById('lbl-pos').innerText = "Wafer 中心位置 e_w(t)";
+                document.getElementById('card-result').style.display = 'none';
+            } else {
+                document.getElementById('lbl-pos').innerText = "Wafer 中心位置 e_w(t)";
+                document.getElementById('lbl-result').innerText = "时间平均 NUV";
+                document.getElementById('card-result').style.display = 'flex';
+                document.getElementById('res-time').innerText = simTime.toFixed(1) + ' s';
+            }
+            
+            if (tabId === 'tab-epd') generateEpdData(); // 自动跑一次 EPD
+        }
+
+        // === 初始化 ===
+        function resetAll() {
+            // Wafer
+            gridWafer = []; simTime = 0;
+            for (let x = -R_wafer; x <= R_wafer; x += stepWafer) {
+                for (let y = -R_wafer; y <= R_wafer; y += stepWafer) {
+                    if (x*x + y*y <= R_wafer*R_wafer) gridWafer.push({ x: x, y: y, accumV: 0, r: Math.sqrt(x*x + y*y) });
+                }
+            }
+            document.getElementById('canvasWaferProfile').style.display = 'none';
+            document.getElementById('lbl-wafer-profile').style.display = 'none';
+
+            scratchPath = []; simTimeDefect = 0;
+            
+            // Pad
+            gridPad = []; simTimePad = 0;
+            for (let x = -R_pad; x <= R_pad; x += stepPad) {
+                for (let y = -R_pad; y <= R_pad; y += stepPad) {
+                    if (x*x + y*y <= R_pad*R_pad) gridPad.push({ x: x, y: y, accumWear: 0, r: Math.sqrt(x*x + y*y) });
+                }
+            }
+            if(activeTab === 'tab-pad') updatePadWear(0, wp_rpm*Math.PI/30, wd_rpm*Math.PI/30, d_e0, true);
+        }
+
+        function getSweepPos(time, e0, amp, profile) {
+            if (amp === 0) return e0;
+            const freq = 0.1;
+            if (profile === 'sine') return e0 + amp * Math.sin(2 * Math.PI * freq * time);
+            const phase = (time * freq) % 1;
+            const tri = phase < 0.5 ? (phase * 4 - 1) : (3 - phase * 4);
+            return e0 + amp * tri;
+        }
+
+        // === 动画主循环 ===
+        function loop(timestamp) {
+            if (!isRunning) return;
+            const dt = (timestamp - lastTime) / 1000; lastTime = timestamp;
+            const wp = wp_rpm * Math.PI / 30;
+
+            if (activeTab === 'tab-nuv') {
+                simTime += dt; let e_w = getSweepPos(simTime, w_e0, w_amp, w_profile);
+                document.getElementById('res-e').innerText = e_w.toFixed(1) + ' mm';
+                document.getElementById('res-time').innerText = simTime.toFixed(1) + ' s';
+                updateNuv(dt, wp, wc_rpm * Math.PI / 30, e_w, false);
+            } 
+            else if (activeTab === 'tab-defect') {
+                updateDefect(dt * 5, wp, wc_rpm * Math.PI / 30);
+            }
+            else if (activeTab === 'tab-pad') {
+                simTimePad += dt; let e_d = getSweepPos(simTimePad, d_e0, d_amp, d_profile);
+                document.getElementById('res-e').innerText = e_d.toFixed(1) + ' mm';
+                document.getElementById('res-time').innerText = (simTimePad / 60).toFixed(2) + ' min';
+                updatePadWear(dt, wp, wd_rpm * Math.PI / 30, e_d, false);
+            }
+            // Tab 4 (EPD) 采用一次性高精度生成，不随动画帧逐秒跑
+            
+            requestAnimationFrame(loop);
+        }
+
+        // ==========================================
+        // 功能 1：Wafer NUV 预测与 1D 剖面
+        // ==========================================
+        document.getElementById('btn-wafer-predict').addEventListener('click', () => {
+            isRunning = false; document.getElementById('btn-toggle').innerText = "继续动画"; document.getElementById('btn-toggle').style.background = "#f59e0b";
+            
+            simTime = 0; // 重置
+            for (let pt of gridWafer) pt.accumV = 0;
+
+            const dtMath = 0.05; // 50ms 精度
+            const steps = predict_w_time / dtMath;
+            const wp = wp_rpm * Math.PI / 30, wc = wc_rpm * Math.PI / 30;
+
+            for(let i=0; i<steps; i++) {
+                simTime += dtMath;
+                let e_w = getSweepPos(simTime, w_e0, w_amp, w_profile);
+                const theta_c = -wc * simTime;
+                const cos_tc = Math.cos(theta_c), sin_tc = Math.sin(theta_c);
+                const rel_w = wp - wc;
+
+                for (let pt of gridWafer) {
+                    const xt = pt.x * cos_tc - pt.y * sin_tc;
+                    const yt = pt.x * sin_tc + pt.y * cos_tc;
+                    const vx = -rel_w * yt;
+                    const vy = wp * e_w + rel_w * xt;
+                    pt.accumV += Math.sqrt(vx*vx + vy*vy) * dtMath;
+                }
+            }
+
+            document.getElementById('res-time').innerText = simTime.toFixed(1) + ' s';
+            updateNuv(0, wp, wc, getSweepPos(simTime, w_e0, w_amp, w_profile), true); // 强制绘制
+        });
+
+        function updateNuv(dt, wp, wc, e_w, forceProfile) {
+            const theta_c = -wc * simTime; 
+            let minAvg = Infinity, maxAvg = -Infinity, sumAvg = 0;
+
+            if (dt > 0) {
+                const cos_tc = Math.cos(theta_c), sin_tc = Math.sin(theta_c);
+                const rel_w = wp - wc;
+                for (let pt of gridWafer) {
+                    const xt = pt.x * cos_tc - pt.y * sin_tc;
+                    const yt = pt.x * sin_tc + pt.y * cos_tc;
+                    const v = Math.sqrt(Math.pow(-rel_w*yt, 2) + Math.pow(wp*e_w + rel_w*xt, 2));
+                    pt.accumV += v * dt;
+                }
+            }
+
+            for (let pt of gridWafer) {
+                const avgV = simTime > 0 ? pt.accumV / simTime : 0;
+                if(avgV < minAvg) minAvg = avgV; if(avgV > maxAvg) maxAvg = avgV;
+                sumAvg += avgV;
+            }
+
+            const meanV = sumAvg / gridWafer.length; let sumSq = 0;
+            for(let pt of gridWafer) sumSq += Math.pow((simTime>0?pt.accumV/simTime:0) - meanV, 2);
+            document.getElementById('res-result').innerText = (meanV===0?0:(Math.sqrt(sumSq/gridWafer.length)/meanV)*100).toFixed(2)+' %';
+
+            // 绘制 2D 热力图
+            const ctx = ctxNuv; ctx.clearRect(0,0,820,820);
+            ctx.save(); ctx.translate(cx, cy); ctx.rotate(-wp * simTime); // 真实的物理相位
+            ctx.beginPath(); ctx.arc(0,0, R_pad, 0, 2*Math.PI); ctx.fillStyle='#f1f5f9'; ctx.fill(); ctx.stroke(); ctx.restore();
+            
+            ctx.save(); ctx.translate(mapX(e_w), mapY(0)); ctx.rotate(theta_c);
+            for (let pt of gridWafer) {
+                const avgV = simTime > 0 ? pt.accumV / simTime : 0;
+                let ratio = (maxAvg - minAvg) < 1e-5 ? 0.5 : (avgV - minAvg)/(maxAvg - minAvg);
+                ctx.fillStyle = `hsl(${(1-ratio)*240}, 100%, 50%)`;
+                ctx.fillRect(pt.x - stepWafer/2, pt.y - stepWafer/2, stepWafer+1, stepWafer+1);
+            }
+            ctx.beginPath(); ctx.arc(0,0, R_wafer, 0, 2*Math.PI); ctx.lineWidth=3; ctx.stroke(); ctx.restore();
+
+            if(minAvg===Infinity)minAvg=0; if(maxAvg===-Infinity)maxAvg=0;
+            document.getElementById('leg-min-nuv').innerText = `去除慢 ${(minAvg/1000).toFixed(2)}m/s`;
+            document.getElementById('leg-max-nuv').innerText = `去除快 ${(maxAvg/1000).toFixed(2)}m/s`;
+
+            // 绘制 1D 剖面
+            if (forceProfile) {
+                document.getElementById('canvasWaferProfile').style.display = 'block';
+                document.getElementById('lbl-wafer-profile').style.display = 'block';
+                drawProfile1D(ctxWaferProf, gridWafer, R_wafer, 2, minAvg, maxAvg, simTime);
+            }
+        }
+
+        // ==========================================
+        // 功能 4：EPD Laser 终点轨迹预测
+        // ==========================================
+        document.getElementById('btn-epd-predict').addEventListener('click', generateEpdData);
+
+        function generateEpdData() {
+            epdPoints2D = []; epdData1D = [];
+            const wp = wp_rpm * Math.PI / 30, wc = wc_rpm * Math.PI / 30;
+            const dt = 0.01; // 100Hz 激光采样率
+            const steps = epd_time / dt;
+
+            for(let i=0; i<=steps; i++) {
+                let t = i * dt;
+                let e_w = getSweepPos(t, w_e0, w_amp, w_profile);
+                
+                // 1. 激光在全局坐标系下的位置 (跟随 Pad 旋转)
+                let gx = epd_r * Math.cos(wp * t);
+                let gy = epd_r * Math.sin(wp * t);
+                
+                // 2. 激光相对于晶圆中心的坐标
+                let rel_x = gx - e_w;
+                let rel_y = gy;
+                let r_hit = Math.sqrt(rel_x*rel_x + rel_y*rel_y);
+
+                // 3. 判断是否打在 Wafer 上
+                if (r_hit <= R_wafer) {
+                    // 反向旋转映射到 Wafer 局部坐标系 (Wafer 转角为 -wc*t)
+                    const theta_c = wc * t; // 抵消反转
+                    let local_x = rel_x * Math.cos(theta_c) - rel_y * Math.sin(theta_c);
+                    let local_y = rel_x * Math.sin(theta_c) + rel_y * Math.cos(theta_c);
+                    
+                    epdPoints2D.push({ x: local_x, y: local_y });
+                    epdData1D.push({ t: t, r: r_hit });
+                } else {
+                    epdData1D.push({ t: t, r: null }); // 未命中
+                }
+            }
+            renderEpdViews();
+        }
+
+        function renderEpdViews() {
+            // --- 渲染 2D 轨迹 ---
+            const ctx2 = ctxEpd2D;
+            ctx2.clearRect(0,0,820,580);
+            ctx2.save(); ctx2.translate(410, 290); // 居中 Wafer
+            
+            // 绘制 Wafer 底盘 (第一视角)
+            ctx2.beginPath(); ctx2.arc(0,0, R_wafer*1.8, 0, 2*Math.PI); // 放缩以便看清
+            ctx2.fillStyle='#e2e8f0'; ctx2.fill(); ctx2.lineWidth=2; ctx2.strokeStyle='#64748b'; ctx2.stroke();
+            // 缺口
+            ctx2.fillStyle='#64748b'; ctx2.beginPath(); ctx2.moveTo(-10, -R_wafer*1.8); ctx2.lineTo(0, -R_wafer*1.8+15); ctx2.lineTo(10, -R_wafer*1.8); ctx2.fill();
+
+            // 绘制红点 (激光采样点)
+            ctx2.fillStyle = '#e11d48';
+            for (let pt of epdPoints2D) {
+                ctx2.beginPath();
+                ctx2.arc(pt.x * 1.8, pt.y * 1.8, 2.5, 0, 2*Math.PI);
+                ctx2.fill();
+            }
+            ctx2.restore();
+
+            // --- 渲染 1D 时序曲线 ---
+            const ctx1 = ctxEpdProf;
+            ctx1.clearRect(0,0,820,220);
+            const w = 820, h = 220, mX = 40, mY = 20;
+            const gW = w - mX*2, gH = h - mY*2;
+
+            // 网格与轴
+            ctx1.strokeStyle='#e2e8f0'; ctx1.lineWidth=1; ctx1.fillStyle='#64748b'; ctx1.font='12px sans-serif'; ctx1.textAlign='center';
+            // Y 轴网格 (半径 0 到 150)
+            for(let r=0; r<=150; r+=50) {
+                let y = mY + gH - (r/150)*gH;
+                ctx1.beginPath(); ctx1.moveTo(mX, y); ctx1.lineTo(mX+gW, y); ctx1.stroke();
+                ctx1.textAlign='right'; ctx1.fillText(r, mX-5, y+4);
+            }
+            ctx1.strokeStyle='#94a3b8'; ctx1.lineWidth=2;
+            ctx1.beginPath(); ctx1.moveTo(mX, mY); ctx1.lineTo(mX, mY+gH); ctx1.moveTo(mX, mY+gH); ctx1.lineTo(mX+gW, mY+gH); ctx1.stroke();
+
+            // 绘制数据
+            ctx1.beginPath();
+            ctx1.strokeStyle = '#e11d48'; ctx1.lineWidth = 2;
+            let isDrawing = false;
+            for (let i=0; i<epdData1D.length; i++) {
+                let d = epdData1D[i];
+                let px = mX + (d.t / epd_time) * gW;
+                
+                if (d.r !== null) {
+                    let py = mY + gH - (d.r / 150) * gH;
+                    if (!isDrawing) { ctx1.moveTo(px, py); isDrawing = true; }
+                    else { ctx1.lineTo(px, py); }
+                    
+                    // 顺便画点
+                    if(i%5 === 0) { // 稍微稀疏化视觉点
+                        ctx1.fillStyle = '#be185d';
+                        ctx1.fillRect(px-1.5, py-1.5, 3, 3);
+                    }
+                } else {
+                    isDrawing = false; // 飞出晶圆
+                }
+            }
+            ctx1.stroke();
+        }
+
+        // ==========================================
+        // 通用绘图逻辑 & 其他现有逻辑
+        // ==========================================
+        function drawProfile1D(ctx, gridData, maxRadius, binSize, minVal, maxVal, simTimeRef) {
+            const width = 820, height = 200;
+            const maxBin = Math.ceil(maxRadius / binSize);
+            let bins = new Array(maxBin + 1).fill(0), counts = new Array(maxBin + 1).fill(0);
+
+            for (let pt of gridData) {
+                let b = Math.floor(pt.r / binSize);
+                if (b <= maxBin) { bins[b] += (simTimeRef > 0 ? (pt.accumV||pt.accumWear) / simTimeRef : 0); counts[b]++; }
+            }
+
+            let validPoints = [];
+            for (let i = 0; i <= maxBin; i++) { if (counts[i] > 0) validPoints.push({ r: i * binSize + binSize/2, val: bins[i]/counts[i] }); }
+
+            ctx.clearRect(0,0,width,height);
+            const marginX = 40, marginY = 20, graphW = width - marginX*2, graphH = height - marginY*2;
+            
+            ctx.strokeStyle='#e2e8f0'; ctx.lineWidth=1; ctx.fillStyle='#64748b'; ctx.font='12px sans-serif'; ctx.textAlign='center';
+            for (let r = 0; r <= maxRadius; r += 50) {
+                const x = marginX + (r / maxRadius) * graphW;
+                ctx.beginPath(); ctx.moveTo(x, marginY); ctx.lineTo(x, marginY+graphH); ctx.stroke();
+                ctx.fillText(r, x, marginY+graphH+15);
+            }
+            ctx.strokeStyle='#94a3b8'; ctx.lineWidth=2;
+            ctx.beginPath(); ctx.moveTo(marginX, marginY); ctx.lineTo(marginX, marginY+graphH); ctx.lineTo(marginX+graphW, marginY+graphH); ctx.stroke();
+
+            if (maxVal > 0 && maxVal !== minVal && validPoints.length > 0) {
+                ctx.beginPath(); ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 2;
+                for (let i = 0; i < validPoints.length; i++) {
+                    const x = marginX + (validPoints[i].r / maxRadius) * graphW;
+                    const y = marginY + graphH - ((validPoints[i].val - minVal) / (maxVal - minVal) * graphH);
+                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+                ctx.lineTo(marginX + graphW, marginY + graphH); ctx.lineTo(marginX, marginY + graphH); ctx.closePath();
+                const grad = ctx.createLinearGradient(0, marginY, 0, marginY+graphH);
+                grad.addColorStop(0, 'rgba(37, 99, 235, 0.2)'); grad.addColorStop(1, 'rgba(37, 99, 235, 0.0)');
+                ctx.fillStyle = grad; ctx.fill();
+            }
+        }
+
+        // 功能 2: Defect 保持原样
+        function updateDefect(dtFast, wp, wc) {
+            const sub = 10; const dt = dtFast/sub;
+            for(let i=0; i<sub; i++){
+                simTimeDefect += dt; let e_w = getSweepPos(simTimeDefect, w_e0, w_amp, w_profile);
+                let gx = defect_r * Math.cos(wp * simTimeDefect) - e_w, gy = defect_r * Math.sin(wp * simTimeDefect);
+                let tw = wc * simTimeDefect;
+                let lx = gx * Math.cos(tw) + gy * Math.sin(tw), ly = -gx * Math.sin(tw) + gy * Math.cos(tw);
+                if(lx*lx + ly*ly <= R_wafer*R_wafer) scratchPath.push({x: lx, y: ly}); else scratchPath.push(null);
+            }
+            document.getElementById('res-time').innerText = simTimeDefect.toFixed(1) + ' s';
+            const ctx = ctxDefect; ctx.clearRect(0,0,820,820); ctx.save(); ctx.translate(cx, cy);
+            ctx.beginPath(); ctx.arc(0,0, R_wafer*2, 0, 2*Math.PI); ctx.fillStyle='#e2e8f0'; ctx.fill(); ctx.stroke();
+            ctx.beginPath(); let drawing=false; ctx.strokeStyle='rgba(220,38,38,0.8)'; ctx.lineWidth=1.5;
+            for(let pt of scratchPath){
+                if(pt===null) drawing=false; else { if(!drawing) { ctx.moveTo(pt.x*2, pt.y*2); drawing=true; } else ctx.lineTo(pt.x*2, pt.y*2); }
+            }
+            ctx.stroke(); ctx.restore();
+        }
+
+        // 功能 3: Pad Wear 一键预测
+        document.getElementById('btn-disk-predict').addEventListener('click', () => {
+            isRunning = false; document.getElementById('btn-toggle').innerText = "继续动画"; document.getElementById('btn-toggle').style.background = "#f59e0b";
+            simTimePad = 0; for(let pt of gridPad) pt.accumWear = 0;
+            const dtMath = 0.05, simDuration = 100, fastSteps = simDuration / dtMath, multiplier = 3600 / simDuration; 
+            const wp = wp_rpm * Math.PI / 30, wd = wd_rpm * Math.PI / 30;
+
+            for(let i=0; i<fastSteps; i++) {
+                simTimePad += dtMath; let e_d = getSweepPos(simTimePad, d_e0, d_amp, d_profile);
+                const real_theta = wp * simTimePad, cos_t = Math.cos(real_theta), sin_t = Math.sin(real_theta), r_sq = R_disk * R_disk;
+                for (let pt of gridPad) {
+                    const gx = pt.x * cos_t - pt.y * sin_t, gy = pt.x * sin_t + pt.y * cos_t, dx = gx - e_d;
+                    if (dx*dx + gy*gy <= r_sq) pt.accumWear += Math.sqrt(Math.pow(-(wd-wp)*gy,2) + Math.pow(wd*dx-wp*gx,2)) * dtMath;
+                }
+            }
+            for (let pt of gridPad) pt.accumWear *= multiplier;
+            simTimePad = 3600; 
+            updatePadWear(0, wp, wd, getSweepPos(simTimePad, d_e0, d_amp, d_profile), true);
+            document.getElementById('res-time').innerText = '60.0 min';
+        });
+
+        function updatePadWear(dt, wp, wd, e_d, forceProfile) {
+            let minWear = Infinity, maxWear = -Infinity, sumWear = 0;
+            if (dt > 0) {
+                const cos_t = Math.cos(wp*simTimePad), sin_t = Math.sin(wp*simTimePad);
+                for (let pt of gridPad) {
+                    const gx = pt.x * cos_t - pt.y * sin_t, gy = pt.x * sin_t + pt.y * cos_t, dx = gx - e_d; 
+                    if (dx*dx + gy*gy <= R_disk*R_disk) pt.accumWear += Math.sqrt(Math.pow(-(wd-wp)*gy,2) + Math.pow(wd*dx-wp*gx,2)) * dt;
+                }
+            }
+            for(let pt of gridPad) {
+                const w = simTimePad > 0 ? pt.accumWear / simTimePad : 0;
+                if(w < minWear) minWear = w; if(w > maxWear) maxWear = w; sumWear += w;
+            }
+            const meanW = sumWear / gridPad.length; let sumSqW = 0;
+            for (let pt of gridPad) sumSqW += Math.pow((simTimePad > 0 ? pt.accumWear/simTimePad : 0) - meanW, 2);
+            document.getElementById('res-result').innerText = (meanW === 0 ? 0 : (Math.sqrt(sumSqW / gridPad.length) / meanW) * 100).toFixed(2) + ' %';
+
+            const ctx = ctxPad; ctx.clearRect(0,0,820,820);
+            ctx.save(); ctx.translate(cx, cy); ctx.rotate(-wp * simTimePad); 
+            for (let pt of gridPad) {
+                const w = simTimePad > 0 ? pt.accumWear/simTimePad : 0;
+                ctx.fillStyle = (maxWear-minWear<1e-5)?'#f1f5f9':`hsl(${(1-(w-minWear)/(maxWear-minWear))*240}, 100%, 50%)`;
+                ctx.fillRect(pt.x - stepPad/2, pt.y - stepPad/2, stepPad+1, stepPad+1);
+            }
+            ctx.beginPath(); ctx.arc(0,0, R_pad, 0, 2*Math.PI); ctx.lineWidth=2; ctx.strokeStyle='#0f172a'; ctx.stroke(); ctx.restore();
+
+            ctx.save(); ctx.translate(mapX(e_d), mapY(0)); ctx.rotate(wd * simTimePad); 
+            ctx.beginPath(); ctx.arc(0,0, R_disk, 0, 2*Math.PI); ctx.fillStyle = 'rgba(203, 213, 225, 0.6)'; ctx.fill(); ctx.lineWidth=2; ctx.stroke();
+            ctx.fillStyle='#0f172a'; ctx.beginPath(); ctx.arc(0,0, 3, 0, 2*Math.PI); ctx.fill(); ctx.restore();
+
+            if (forceProfile) drawProfile1D(ctxPadProf, gridPad, R_pad, 4, minWear, maxWear, simTimePad);
+        }
+
+        // 初始化运行
+        syncWaferSweep(); syncDiskSweep(); switchTab('tab-nuv'); requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
