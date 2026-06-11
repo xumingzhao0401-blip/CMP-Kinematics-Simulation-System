@@ -1,4 +1,5 @@
 # CMP Kinematics Simulation System (CMP 全栈量产运动学分析系统)
+https://xumingzhao0401-blip.github.io/CMP-Kinematics-Simulation-System/
 
 这是一个基于 HTML5 Canvas 和原生 JavaScript 开发的轻量级、全栈式化学机械抛光 (CMP) 运动学仿真系统。本工具为半导体制造过程中的平坦化工艺提供直观的理论验证与数据分析。系统无需后端依赖，可直接在浏览器中进行高精度的动态物理场渲染与数据积分。
 
